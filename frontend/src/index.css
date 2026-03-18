@@ -1,0 +1,74 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
+
+@theme {
+  --font-sans: "Inter", "Outfit", system-ui, sans-serif;
+
+  /* FreelanceFlow Dark Theme Palette - Matching the new reference */
+  --color-ff-950: #111111; /* Main background */
+  --color-ff-900: #18191a; /* Sidebar & cards */
+  --color-ff-850: #202123; /* Sub-cards */
+  --color-ff-800: #28292c; /* Hover states */
+  --color-ff-700: #34363a; /* Borders */
+  --color-ff-600: #4a4d53;
+  --color-ff-500: #686c75;
+  --color-ff-400: #8c9099;
+  --color-ff-300: #b5b8c0;
+  --color-ff-200: #d6d9df;
+  --color-ff-100: #f4f5f7;
+
+  /* Accent Colors - Neon Green */
+  --color-accent: #bbf733;
+  --color-accent-light: #cdfb5a;
+  --color-accent-dark: #91ce17;
+  --color-accent-glow: rgba(187, 247, 51, 0.15);
+
+  --color-success: #10b981;
+  --color-success-glow: rgba(16, 185, 129, 0.15);
+  --color-warning: #f59e0b;
+  --color-warning-glow: rgba(245, 158, 11, 0.15);
+  --color-danger: #ef4444;
+  --color-danger-glow: rgba(239, 68, 68, 0.15);
+  --color-info: #06b6d4;
+}
+
+
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-ff-950);
+  color: var(--color-ff-200);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-ff-700) transparent;
+  }
+  *::-webkit-scrollbar { width: 6px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: var(--color-ff-700); border-radius: 10px; }
+  *::-webkit-scrollbar-thumb:hover { background: var(--color-ff-600); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--color-accent-glow); }
+  50% { box-shadow: 0 0 20px 4px var(--color-accent-glow); }
+}
+
+.animate-fadeIn { animation: fadeIn 0.5s ease-out forwards; }
+.animate-shimmer { animation: shimmer 2s linear infinite; }
+.animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
