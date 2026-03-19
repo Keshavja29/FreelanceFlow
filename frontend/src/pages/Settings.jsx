@@ -1,6 +1,6 @@
 import React, { useState, useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { Settings as SettingsIcon, Crown, Check, Zap, Shield, FileText, Users, Clock, BarChart3 } from 'lucide-react';
 
 const features = {
@@ -21,7 +21,7 @@ const features = {
 };
 
 export default function Settings() {
-  const { user, updateUser, API_URL } = useContext(AuthContext);
+  const { user, updateUser } = useContext(AuthContext);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState('');
 
@@ -32,8 +32,10 @@ export default function Settings() {
     setLoading(true);
     setSuccess('');
     try {
-      const res = await axios.put(`${API_URL}/dashboard/plan`, { plan });
-      updateUser({ plan: res.data.plan });
+      const { data, error } = await supabase.from('profiles').update({ plan }).eq('id', user.id).select().single();
+      if (error) throw error;
+      
+      updateUser({ plan: data.plan });
       setSuccess(`Successfully ${plan === 'Pro' ? 'upgraded to' : 'downgraded to'} ${plan} plan!`);
     } catch (err) {
       console.error(err);

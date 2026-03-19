@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
 import { useOutletContext } from 'react-router-dom';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { format } from 'date-fns';
 import { Clock, Plus, Trash2, X, Play, Square, Calendar, Filter } from 'lucide-react';
 
 export default function TimeLogs() {
-  const { API_URL } = useContext(AuthContext);
+  const { user } = useContext(AuthContext);
   const { timer, setTimer, elapsed, stopTimer } = useOutletContext();
   const [logs, setLogs] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -18,30 +18,59 @@ export default function TimeLogs() {
   const [startForm, setStartForm] = useState({ projectId: '', description: '' });
 
   const fetchData = async () => {
+    if (!user) return;
     try {
-      const params = {};
-      if (filterProject) params.projectId = filterProject;
+      let query = supabase
+        .from('timelogs')
+        .select('*, projects(name, hourly_rate, clients(default_hourly_rate))')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+        
+      if (filterProject) {
+        query = query.eq('project_id', filterProject);
+      }
+      
       const [logsRes, projRes] = await Promise.all([
-        axios.get(`${API_URL}/timelogs`, { params }),
-        axios.get(`${API_URL}/projects`)
+        query,
+        supabase.from('projects').select('id, name').eq('user_id', user.id)
       ]);
-      setLogs(logsRes.data);
-      setProjects(projRes.data);
+      
+      if (logsRes.data) {
+        const mapped = logsRes.data.map(log => {
+          const rate = log.projects?.hourly_rate || log.projects?.clients?.default_hourly_rate || 0;
+          return {
+            ...log, _id: log.id, startTime: log.start_time,
+            duration: log.duration_seconds ? Math.round(log.duration_seconds / 60) : 0,
+            hourlyRate: rate,
+            projectId: { _id: log.project_id, name: log.projects?.name }
+          };
+        });
+        setLogs(mapped);
+      }
+      
+      if (projRes.data) setProjects(projRes.data.map(p => ({ ...p, _id: p.id })));
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchData(); }, [API_URL, filterProject]);
+  useEffect(() => { fetchData(); }, [user, filterProject]);
 
   const handleStartTimer = async (e) => {
     e.preventDefault();
     try {
-      const res = await axios.post(`${API_URL}/timelogs/start`, startForm);
-      const t = { id: res.data._id, projectName: res.data.projectId?.name, startTime: res.data.startTime };
+      const { data, error } = await supabase.from('timelogs').insert([{
+        user_id: user.id, project_id: startForm.projectId, description: startForm.description || null,
+        start_time: new Date().toISOString(), is_wip: true
+      }]).select('*, projects(name)').single();
+      
+      if (error) throw error;
+      
+      const t = { id: data.id, projectName: data.projects?.name, startTime: data.start_time };
       setTimer(t);
       localStorage.setItem('ff_timer', JSON.stringify(t));
       setShowStart(false);
       setStartForm({ projectId: '', description: '' });
+      await fetchData();
     } catch (err) { console.error(err); }
   };
 
@@ -53,7 +82,14 @@ export default function TimeLogs() {
   const handleManualEntry = async (e) => {
     e.preventDefault();
     try {
-      await axios.post(`${API_URL}/timelogs/manual`, manualForm);
+      const start = new Date(manualForm.date);
+      const end = new Date(start.getTime() + manualForm.hours * 3600000);
+      
+      await supabase.from('timelogs').insert([{
+        user_id: user.id, project_id: manualForm.projectId, description: manualForm.description || null,
+        start_time: start.toISOString(), end_time: end.toISOString(),
+        duration_seconds: Math.floor(manualForm.hours * 3600), is_wip: false
+      }]);
       setShowManual(false);
       setManualForm({ projectId: '', date: format(new Date(), 'yyyy-MM-dd'), hours: 1, description: '' });
       await fetchData();
@@ -62,9 +98,10 @@ export default function TimeLogs() {
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this time log?')) return;
-    await axios.delete(`${API_URL}/timelogs/${id}`);
+    await supabase.from('timelogs').delete().eq('id', id);
     setLogs(logs.filter(l => l._id !== id));
   };
+
 
   const formatDuration = (minutes) => {
     const h = Math.floor(minutes / 60);

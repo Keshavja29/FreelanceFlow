@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { format } from 'date-fns';
 import { FileText, Plus, Trash2, X, Download, ChevronRight, DollarSign, AlertTriangle, Crown } from 'lucide-react';
 
@@ -12,7 +12,7 @@ const statusColors = {
 };
 
 export default function Invoices() {
-  const { API_URL, user } = useContext(AuthContext);
+  const { user } = useContext(AuthContext);
   const [invoices, setInvoices] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,18 +24,25 @@ export default function Invoices() {
   const [creating, setCreating] = useState(false);
 
   const fetchData = async () => {
+    if (!user) return;
     try {
       const [invRes, cliRes] = await Promise.all([
-        axios.get(`${API_URL}/invoices`),
-        axios.get(`${API_URL}/clients`)
+        supabase.from('invoices').select('*, clients(name, company, email)').eq('user_id', user.id).order('created_at', { ascending: false }),
+        supabase.from('clients').select('id, name, company').eq('user_id', user.id)
       ]);
-      setInvoices(invRes.data);
-      setClients(cliRes.data);
+      if (invRes.data) {
+        setInvoices(invRes.data.map(i => ({
+          ...i, _id: i.id, invoiceNumber: i.invoice_number, dateFrom: i.date_from, dateTo: i.date_to,
+          clientId: { ...i.clients, _id: i.client_id },
+          lineItems: i.line_items, taxRate: i.tax_rate, taxAmount: i.tax_amount, total: i.amount
+        })));
+      }
+      if (cliRes.data) setClients(cliRes.data.map(c => ({...c, _id: c.id})));
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchData(); }, [API_URL]);
+  useEffect(() => { fetchData(); }, [user]);
 
   const isPro = user?.plan === 'Pro';
 
@@ -54,28 +61,70 @@ export default function Invoices() {
     }
     try {
       setError('');
-      const res = await axios.get(`${API_URL}/timelogs/unbilled/${wizardData.clientId}`, {
-        params: { from: wizardData.dateFrom, to: wizardData.dateTo }
-      });
-      if (res.data.logs.length === 0) {
+      // Manually find unbilled logs in Supabase
+      const { data: logs, error: logsErr } = await supabase
+        .from('timelogs')
+        .select('*, projects!inner(client_id, name, hourly_rate, clients(default_hourly_rate))')
+        .eq('projects.client_id', wizardData.clientId)
+        .eq('billed', false)
+        .gte('start_time', `${wizardData.dateFrom}T00:00:00.000Z`)
+        .lte('start_time', `${wizardData.dateTo}T23:59:59.999Z`);
+        
+      if (logsErr) throw logsErr;
+      if (!logs || logs.length === 0) {
         setError('No unbilled time logs found for this period');
         return;
       }
-      setPreview(res.data);
+      
+      const lineItems = logs.map(log => {
+        const rate = log.projects?.hourly_rate || log.projects?.clients?.default_hourly_rate || 0;
+        const hours = log.duration_seconds ? log.duration_seconds / 3600 : 0;
+        return {
+          description: `${log.projects.name} - ${log.description || 'Time log'}`,
+          hours, rate, amount: hours * rate, timelog_id: log.id,
+          project_id: log.project_id
+        };
+      });
+      
+      const subtotal = lineItems.reduce((acc, item) => acc + item.amount, 0);
+      const taxAmount = subtotal * (wizardData.taxRate / 100);
+      const totalAmount = subtotal + taxAmount;
+      const totalHours = lineItems.reduce((acc, item) => acc + item.hours, 0);
+      
+      setPreview({
+        logs: logs.map(l => ({ _id: l.id, projectId: { name: l.projects.name }, description: l.description, duration: l.duration_seconds ? l.duration_seconds / 60 : 0 })),
+        lineItems,
+        summary: { totalEntries: logs.length, totalHours: Number(totalHours.toFixed(1)), totalAmount, subtotal, taxAmount }
+      });
       setWizardStep(2);
     } catch (err) {
-      setError(err.response?.data?.message || 'Error fetching time logs');
+      setError(err.message || 'Error fetching time logs');
     }
   };
 
   const createInvoice = async () => {
     setCreating(true);
     try {
-      await axios.post(`${API_URL}/invoices`, wizardData);
+      const invoiceNumber = `INV-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
+      const payload = {
+        user_id: user.id, client_id: wizardData.clientId, invoice_number: invoiceNumber,
+        amount: preview.summary.totalAmount, date_from: wizardData.dateFrom, date_to: wizardData.dateTo,
+        status: 'Draft', timelog_ids: preview.lineItems.map(i => i.timelog_id),
+        line_items: preview.lineItems, subtotal: preview.summary.subtotal,
+        tax_rate: wizardData.taxRate, tax_amount: preview.summary.taxAmount,
+        notes: wizardData.notes, issue_date: new Date().toISOString()
+      };
+      
+      const { data: inv, error: invErr } = await supabase.from('invoices').insert([payload]).select().single();
+      if (invErr) throw invErr;
+      
+      // Update timelogs to billed = true
+      await supabase.from('timelogs').update({ billed: true }).in('id', payload.timelog_ids);
+      
       setShowWizard(false);
       await fetchData();
     } catch (err) {
-      setError(err.response?.data?.message || 'Error creating invoice');
+      setError(err.message || 'Error creating invoice. Note: You may need to run the ALTER TABLE SQL command first!');
     } finally {
       setCreating(false);
     }
@@ -83,16 +132,25 @@ export default function Invoices() {
 
   const updateStatus = async (id, status) => {
     try {
-      const res = await axios.put(`${API_URL}/invoices/${id}`, { status });
-      setInvoices(invoices.map(inv => inv._id === id ? res.data : inv));
+      const { data, error } = await supabase.from('invoices').update({ status }).eq('id', id).select('*, clients(name, company, email)').single();
+      if (error) throw error;
+      const mapped = {
+          ...data, _id: data.id, invoiceNumber: data.invoice_number, dateFrom: data.date_from, dateTo: data.date_to,
+          clientId: { ...data.clients, _id: data.client_id },
+          lineItems: data.line_items, taxRate: data.tax_rate, taxAmount: data.tax_amount, total: data.amount
+      };
+      setInvoices(invoices.map(inv => inv._id === id ? mapped : inv));
     } catch (err) { console.error(err); }
   };
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this invoice? Unbilled time logs will be restored.')) return;
-    await axios.delete(`${API_URL}/invoices/${id}`);
-    setInvoices(invoices.filter(inv => inv._id !== id));
+    const inv = invoices.find(i => i._id === id);
+    if (inv && inv.timelog_ids) await supabase.from('timelogs').update({ billed: false }).in('id', inv.timelog_ids);
+    await supabase.from('invoices').delete().eq('id', id);
+    setInvoices(invoices.filter(i => i._id !== id));
   };
+
 
   const downloadPDF = (invoice) => {
     // Generate PDF client-side with jspdf

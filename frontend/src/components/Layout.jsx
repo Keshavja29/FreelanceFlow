@@ -1,8 +1,8 @@
 import React, { useContext, useState, useEffect } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
+import { supabase } from '../supabaseClient';
 import { LayoutDashboard, Users, FolderKanban, ListTodo, Clock, FileText, Settings, LogOut, Zap, Timer, ChevronLeft, ChevronRight } from 'lucide-react';
-import axios from 'axios';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard', end: true },
@@ -15,7 +15,7 @@ const navItems = [
 ];
 
 export default function Layout() {
-  const { user, logout, API_URL } = useContext(AuthContext);
+  const { user, logout } = useContext(AuthContext);
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [timer, setTimer] = useState(null);
@@ -30,17 +30,24 @@ export default function Layout() {
     }
     // Also check server for active timer
     const checkTimer = async () => {
+      if (!user) return;
       try {
-        const res = await axios.get(`${API_URL}/dashboard/stats`);
-        if (res.data.activeTimer) {
-          const t = { id: res.data.activeTimer._id, projectName: res.data.activeTimer.projectId?.name, startTime: res.data.activeTimer.startTime };
+        const { data, error } = await supabase
+          .from('timelogs')
+          .select('id, start_time, projects(name)')
+          .eq('user_id', user.id)
+          .eq('is_wip', true)
+          .single();
+          
+        if (data) {
+          const t = { id: data.id, projectName: data.projects?.name, startTime: data.start_time };
           setTimer(t);
           localStorage.setItem('ff_timer', JSON.stringify(t));
         }
       } catch {}
     };
     checkTimer();
-  }, [API_URL]);
+  }, [user]);
 
   // Timer tick
   useEffect(() => {
@@ -61,7 +68,13 @@ export default function Layout() {
   const stopTimer = async () => {
     if (!timer?.id) return;
     try {
-      await axios.put(`${API_URL}/timelogs/stop/${timer.id}`);
+      const durationSeconds = Math.floor((Date.now() - new Date(timer.startTime).getTime()) / 1000);
+      await supabase.from('timelogs').update({
+        is_wip: false,
+        end_time: new Date().toISOString(),
+        duration_seconds: durationSeconds
+      }).eq('id', timer.id);
+      
       setTimer(null);
       setElapsed(0);
       localStorage.removeItem('ff_timer');
@@ -74,6 +87,7 @@ export default function Layout() {
     await logout();
     navigate('/login');
   };
+
 
   return (
     <div className="min-h-screen bg-ff-950 flex">

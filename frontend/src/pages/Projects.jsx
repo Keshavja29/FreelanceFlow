@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { format } from 'date-fns';
 import { Plus, Edit3, Trash2, X, FolderKanban, DollarSign } from 'lucide-react';
 
 const statusColors = { 'Active': 'bg-success/10 text-success', 'Completed': 'bg-accent/10 text-accent', 'On Hold': 'bg-warning/10 text-warning' };
 
 export default function Projects() {
-  const { API_URL } = useContext(AuthContext);
+  const { user } = useContext(AuthContext);
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -16,14 +16,16 @@ export default function Projects() {
   const [form, setForm] = useState({ name: '', description: '', clientId: '', status: 'Active', budget: 0, deadline: '' });
 
   useEffect(() => {
+    if (!user) return;
     Promise.all([
-      axios.get(`${API_URL}/projects`),
-      axios.get(`${API_URL}/clients`)
+      supabase.from('projects').select('*, clients(name)').eq('user_id', user.id).order('created_at', { ascending: false }),
+      supabase.from('clients').select('id, name').eq('user_id', user.id)
     ]).then(([pRes, cRes]) => {
-      setProjects(pRes.data);
-      setClients(cRes.data);
+      // Map to old Mongoose struct
+      if (pRes.data) setProjects(pRes.data.map(p => ({ ...p, _id: p.id, clientId: { _id: p.client_id, name: p.clients?.name } })));
+      if (cRes.data) setClients(cRes.data.map(c => ({...c, _id: c.id})));
     }).finally(() => setLoading(false));
-  }, [API_URL]);
+  }, [user]);
 
   const openCreate = () => {
     setEditing(null);
@@ -33,30 +35,40 @@ export default function Projects() {
 
   const openEdit = (p) => {
     setEditing(p);
-    setForm({ name: p.name, description: p.description, clientId: p.clientId?._id || p.clientId, status: p.status, budget: p.budget, deadline: p.deadline ? format(new Date(p.deadline), 'yyyy-MM-dd') : '' });
+    setForm({ name: p.name, description: p.description, clientId: p.clientId?._id || p.clientId, status: p.status, budget: p.budget || 0, deadline: p.deadline ? format(new Date(p.deadline), 'yyyy-MM-dd') : '' });
     setShowModal(true);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const data = { ...form, budget: Number(form.budget), deadline: form.deadline || undefined };
+      const payload = {
+        name: form.name, description: form.description || null,
+        client_id: form.clientId, status: form.status, budget: Number(form.budget),
+        deadline: form.deadline || null, user_id: user.id
+      };
+      
       if (editing) {
-        const res = await axios.put(`${API_URL}/projects/${editing._id}`, data);
-        setProjects(projects.map(p => p._id === editing._id ? res.data : p));
+        const { data, error } = await supabase.from('projects').update(payload).eq('id', editing._id).select('*, clients(name)').single();
+        if (error) throw error;
+        const mapped = { ...data, _id: data.id, clientId: { _id: data.client_id, name: data.clients?.name } };
+        setProjects(projects.map(p => p._id === editing._id ? mapped : p));
       } else {
-        const res = await axios.post(`${API_URL}/projects`, data);
-        setProjects([res.data, ...projects]);
+        const { data, error } = await supabase.from('projects').insert([payload]).select('*, clients(name)').single();
+        if (error) throw error;
+        const mapped = { ...data, _id: data.id, clientId: { _id: data.client_id, name: data.clients?.name } };
+        setProjects([mapped, ...projects]);
       }
       setShowModal(false);
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error('Supabase error:', err); }
   };
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this project?')) return;
-    await axios.delete(`${API_URL}/projects/${id}`);
+    await supabase.from('projects').delete().eq('id', id);
     setProjects(projects.filter(p => p._id !== id));
   };
+
 
   if (loading) return <div className="flex items-center justify-center h-full min-h-screen"><div className="w-8 h-8 border-2 border-accent/30 border-t-accent rounded-full animate-spin"></div></div>;
 

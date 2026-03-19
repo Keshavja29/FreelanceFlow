@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { format } from 'date-fns';
 import { Plus, Edit3, Trash2, X, ListTodo, CheckCircle2, Circle, Clock } from 'lucide-react';
 
@@ -9,7 +9,7 @@ const statusColors = { 'To Do': 'text-ff-400', 'In Progress': 'text-warning', 'D
 const priorityColors = { 'High': 'bg-danger/10 text-danger', 'Medium': 'bg-warning/10 text-warning', 'Low': 'bg-ff-700/30 text-ff-400' };
 
 export default function Tasks() {
-  const { API_URL } = useContext(AuthContext);
+  const { user } = useContext(AuthContext);
   const [tasks, setTasks] = useState([]);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -19,10 +19,17 @@ export default function Tasks() {
   const [filterProject, setFilterProject] = useState('');
 
   useEffect(() => {
-    Promise.all([axios.get(`${API_URL}/tasks`), axios.get(`${API_URL}/projects`)])
-      .then(([tRes, pRes]) => { setTasks(tRes.data); setProjects(pRes.data); })
-      .finally(() => setLoading(false));
-  }, [API_URL]);
+    if (!user) return;
+    Promise.all([
+      supabase.from('tasks').select('*, projects(name)').eq('user_id', user.id).order('created_at', { ascending: false }),
+      supabase.from('projects').select('id, name').eq('user_id', user.id)
+    ])
+    .then(([tRes, pRes]) => { 
+      if (tRes.data) setTasks(tRes.data.map(t => ({ ...t, _id: t.id, dueDate: t.due_date, projectId: { _id: t.project_id, name: t.projects?.name } })));
+      if (pRes.data) setProjects(pRes.data.map(p => ({ ...p, _id: p.id })));
+    })
+    .finally(() => setLoading(false));
+  }, [user]);
 
   const filtered = filterProject ? tasks.filter(t => (t.projectId?._id || t.projectId) === filterProject) : tasks;
 
@@ -35,13 +42,22 @@ export default function Tasks() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const data = { ...form, dueDate: form.dueDate || undefined };
+      const payload = {
+        title: form.title, description: form.description || null,
+        project_id: form.projectId, status: form.status, priority: form.priority,
+        due_date: form.dueDate || null, user_id: user.id
+      };
+      
       if (editing) {
-        const res = await axios.put(`${API_URL}/tasks/${editing._id}`, data);
-        setTasks(tasks.map(t => t._id === editing._id ? res.data : t));
+        const { data, error } = await supabase.from('tasks').update(payload).eq('id', editing._id).select('*, projects(name)').single();
+        if (error) throw error;
+        const mapped = { ...data, _id: data.id, dueDate: data.due_date, projectId: { _id: data.project_id, name: data.projects?.name } };
+        setTasks(tasks.map(t => t._id === editing._id ? mapped : t));
       } else {
-        const res = await axios.post(`${API_URL}/tasks`, data);
-        setTasks([res.data, ...tasks]);
+        const { data, error } = await supabase.from('tasks').insert([payload]).select('*, projects(name)').single();
+        if (error) throw error;
+        const mapped = { ...data, _id: data.id, dueDate: data.due_date, projectId: { _id: data.project_id, name: data.projects?.name } };
+        setTasks([mapped, ...tasks]);
       }
       setShowModal(false);
     } catch (err) { console.error(err); }
@@ -50,15 +66,19 @@ export default function Tasks() {
   const toggleStatus = async (task) => {
     const order = ['To Do', 'In Progress', 'Done'];
     const next = order[(order.indexOf(task.status) + 1) % 3];
-    const res = await axios.put(`${API_URL}/tasks/${task._id}`, { status: next });
-    setTasks(tasks.map(t => t._id === task._id ? res.data : t));
+    const { data, error } = await supabase.from('tasks').update({ status: next }).eq('id', task._id).select('*, projects(name)').single();
+    if (data) {
+      const mapped = { ...data, _id: data.id, dueDate: data.due_date, projectId: { _id: data.project_id, name: data.projects?.name } };
+      setTasks(tasks.map(t => t._id === task._id ? mapped : t));
+    }
   };
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this task?')) return;
-    await axios.delete(`${API_URL}/tasks/${id}`);
+    await supabase.from('tasks').delete().eq('id', id);
     setTasks(tasks.filter(t => t._id !== id));
   };
+
 
   if (loading) return <div className="flex items-center justify-center h-full min-h-screen"><div className="w-8 h-8 border-2 border-accent/30 border-t-accent rounded-full animate-spin"></div></div>;
 

@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 import { Plus, Edit3, Trash2, X, Users, Building2, DollarSign, AlertTriangle } from 'lucide-react';
 
 export default function Clients() {
-  const { API_URL, user } = useContext(AuthContext);
+  const { user } = useContext(AuthContext);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -13,14 +13,22 @@ export default function Clients() {
   const [error, setError] = useState('');
 
   const fetchClients = async () => {
+    if (!user) return;
     try {
-      const res = await axios.get(`${API_URL}/clients`);
-      setClients(res.data);
+      const { data, error } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      // Map 'id' to '_id' for frontend compatibility
+      setClients(data.map(c => ({ ...c, _id: c.id, defaultHourlyRate: c.default_hourly_rate })));
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchClients(); }, [API_URL]);
+  useEffect(() => { fetchClients(); }, [user]);
 
   const openCreate = () => {
     setEditing(null);
@@ -40,26 +48,35 @@ export default function Clients() {
     e.preventDefault();
     setError('');
     try {
+      const payload = {
+        name: form.name, email: form.email || null, 
+        default_hourly_rate: form.defaultHourlyRate,
+        user_id: user.id
+      };
+      
       if (editing) {
-        const res = await axios.put(`${API_URL}/clients/${editing._id}`, form);
-        setClients(clients.map(c => c._id === editing._id ? res.data : c));
+        const { data, error } = await supabase.from('clients').update(payload).eq('id', editing.id).select().single();
+        if (error) throw error;
+        setClients(clients.map(c => c._id === editing._id ? { ...data, _id: data.id, defaultHourlyRate: data.default_hourly_rate} : c));
       } else {
-        const res = await axios.post(`${API_URL}/clients`, form);
-        setClients([res.data, ...clients]);
+        const { data, error } = await supabase.from('clients').insert([payload]).select().single();
+        if (error) throw error;
+        setClients([{ ...data, _id: data.id, defaultHourlyRate: data.default_hourly_rate}, ...clients]);
       }
       setShowModal(false);
     } catch (err) {
-      setError(err.response?.data?.message || 'Error saving client');
+      setError(err.message || 'Error saving client');
     }
   };
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this client?')) return;
     try {
-      await axios.delete(`${API_URL}/clients/${id}`);
+      await supabase.from('clients').delete().eq('id', id);
       setClients(clients.filter(c => c._id !== id));
     } catch (err) { console.error(err); }
   };
+
 
   const isFreeLimitReached = user?.plan === 'Free' && clients.length >= 2;
 

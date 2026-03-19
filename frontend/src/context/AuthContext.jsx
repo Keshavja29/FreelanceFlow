@@ -1,5 +1,5 @@
 import React, { createContext, useState, useEffect } from 'react';
-import axios from 'axios';
+import { supabase } from '../supabaseClient';
 
 export const AuthContext = createContext(null);
 
@@ -7,44 +7,86 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  axios.defaults.withCredentials = true;
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const res = await axios.get(`${API_URL}/auth/me`);
-        setUser(res.data);
-      } catch {
-        setUser(null);
-      } finally {
+    // Check initial session
+    const getSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        await fetchProfile(session.user.id, session.user.email);
+      } else {
         setLoading(false);
       }
     };
-    checkAuth();
-  }, [API_URL]);
+    getSession();
+
+    // Listen to changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        await fetchProfile(session.user.id, session.user.email);
+      } else {
+        setUser(null);
+        setLoading(false);
+      }
+    });
+
+    return () => subscription?.unsubscribe();
+  }, []);
+
+  const fetchProfile = async (userId, email) => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+      
+      if (data) {
+        // Map Supabase 'id' to '_id' so existing frontend code works without huge refactoring
+        setUser({ _id: data.id, id: data.id, username: data.username, email, plan: data.plan });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const login = async (email, password) => {
-    const res = await axios.post(`${API_URL}/auth/login`, { email, password });
-    setUser(res.data.user);
-    return res.data;
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(error.message);
+    if (!data.user) throw new Error("Login failed");
+    return data;
   };
 
   const register = async (username, email, password) => {
-    const res = await axios.post(`${API_URL}/auth/register`, { username, email, password });
-    setUser(res.data.user);
-    return res.data;
+    // 1. Register with Auth
+    const { data: authData, error: authErr } = await supabase.auth.signUp({ email, password });
+    if (authErr) throw new Error(authErr.message);
+    if (!authData.user) throw new Error("Signup failed");
+    
+    // 2. Insert into Profiles
+    const { error: profileErr } = await supabase
+      .from('profiles')
+      .insert([{ id: authData.user.id, username }]);
+      
+    if (profileErr) {
+      // Cleanup if failed
+      console.error(profileErr);
+      throw new Error("Failed to create profile");
+    }
+    
+    return authData;
   };
 
   const logout = async () => {
-    await axios.post(`${API_URL}/auth/logout`);
+    await supabase.auth.signOut();
     setUser(null);
   };
 
   const updateUser = (data) => setUser(prev => ({ ...prev, ...data }));
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, updateUser, API_URL }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
