@@ -8,6 +8,11 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Hard fail-safe: Force stop loading after 5 seconds no matter what
+    const failSafe = setTimeout(() => {
+      setLoading(false);
+    }, 5000);
+
     // Check initial session
     const getSession = async () => {
       try {
@@ -35,7 +40,10 @@ export const AuthProvider = ({ children }) => {
       }
     });
 
-    return () => subscription?.unsubscribe();
+    return () => {
+      clearTimeout(failSafe);
+      subscription?.unsubscribe();
+    };
   }, []);
 
   const fetchProfile = async (userId, email) => {
