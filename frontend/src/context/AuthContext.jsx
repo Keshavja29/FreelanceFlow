@@ -10,10 +10,16 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     // Check initial session
     const getSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        await fetchProfile(session.user.id, session.user.email);
-      } else {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        if (session?.user) {
+          await fetchProfile(session.user.id, session.user.email);
+        } else {
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error('Session error:', err);
         setLoading(false);
       }
     };
